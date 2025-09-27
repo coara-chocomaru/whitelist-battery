@@ -77,7 +77,7 @@ public class MainActivity extends AppCompatActivity {
         Process process = null;
         BufferedReader is = null;
         try {
-            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "echo root_test"});
+            process = Runtime.getRuntime().exec("su -c echo root_test");
             is = new BufferedReader(new InputStreamReader(process.getInputStream()));
             String line = is.readLine();
             process.waitFor();
@@ -107,13 +107,8 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void run() {
                 refreshWhitelist();
-                if (appItems != null) {
-                    for (AppItem item : appItems) {
-                        item.isWhitelisted = whitelistSet.contains(item.packageName);
-                    }
-                    if (appAdapter != null) {
-                        appAdapter.notifyDataSetChanged();
-                    }
+                if (appAdapter != null) {
+                    appAdapter.notifyDataSetChanged();
                 }
                 syncHandler.postDelayed(this, SYNC_INTERVAL);
             }
@@ -175,7 +170,7 @@ public class MainActivity extends AppCompatActivity {
         Process process = null;
         BufferedReader is = null;
         try {
-            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "dumpsys deviceidle whitelist"});
+            process = Runtime.getRuntime().exec("su -c dumpsys deviceidle whitelist");
             is = new BufferedReader(new InputStreamReader(process.getInputStream()));
             String line;
             while ((line = is.readLine()) != null) {
@@ -202,7 +197,7 @@ public class MainActivity extends AppCompatActivity {
         String command = add ? "+" + packageName : "-" + packageName;
         Process process = null;
         try {
-            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "dumpsys deviceidle whitelist " + command});
+            process = Runtime.getRuntime().exec("su -c dumpsys deviceidle whitelist " + command);
             process.waitFor();
         } catch (IOException | InterruptedException e) {
             Toast.makeText(this, "Failed to update whitelist: " + e.getMessage(), Toast.LENGTH_SHORT).show();
