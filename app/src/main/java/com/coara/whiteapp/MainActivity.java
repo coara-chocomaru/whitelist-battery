@@ -1,6 +1,7 @@
 package com.coara.whiteapp;
 
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.AsyncTask;
 import android.os.Bundle;
@@ -186,23 +187,36 @@ public class MainActivity extends AppCompatActivity {
             String pkg = l;
             if (pkg.startsWith("package:")) pkg = pkg.substring(8);
             if (pkg.isEmpty()) continue;
-            String label = pkg;
-            try {
-                ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
-                CharSequence lab = pm.getApplicationLabel(ai);
-                if (lab != null && lab.length() > 0) label = lab.toString();
-            } catch (Exception e) {
-                try {
-                    ApplicationInfo ai2 = pm.getApplicationInfo(pkg, PackageManager.GET_META_DATA);
-                    CharSequence lab2 = pm.getApplicationLabel(ai2);
-                    if (lab2 != null && lab2.length() > 0) label = lab2.toString();
-                } catch (Exception e2) {
-                }
-            }
+            String label = resolveAppLabel(pkg, pm);
             boolean wh = whitelistSet.contains(pkg);
             list.add(new AppItem(label, pkg, wh));
         }
         return list;
+    }
+
+    private String resolveAppLabel(String pkg, PackageManager pm) {
+        String label = pkg;
+        try {
+            ApplicationInfo ai = pm.getApplicationInfo(pkg, PackageManager.GET_META_DATA);
+            CharSequence lab = pm.getApplicationLabel(ai);
+            if (lab != null && lab.length() > 0) return lab.toString();
+        } catch (Throwable ignored) {
+        }
+        try {
+            PackageInfo pi = pm.getPackageInfo(pkg, 0);
+            if (pi != null && pi.applicationInfo != null) {
+                CharSequence lab = pm.getApplicationLabel(pi.applicationInfo);
+                if (lab != null && lab.length() > 0) return lab.toString();
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            ApplicationInfo ai2 = pm.getApplicationInfo(pkg, 0);
+            CharSequence lab2 = pm.getApplicationLabel(ai2);
+            if (lab2 != null && lab2.length() > 0) return lab2.toString();
+        } catch (Throwable ignored) {
+        }
+        return label;
     }
 
     private void loadAppList() {
