@@ -3,7 +3,9 @@ package com.coara.whiteapp;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -32,10 +34,8 @@ import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
@@ -159,8 +159,7 @@ public class MainActivity extends AppCompatActivity {
                         whitelistSet.clear();
                         whitelistSet.addAll(currentWhitelist);
                     }
-                    Map<String, String> labelMap = buildPackageLabelMap();
-                    List<AppItem> list = buildAppItemsFromPackageLines(pmLines, labelMap);
+                    List<AppItem> list = buildAppItemsFromPackageLines(pmLines);
                     synchronized (appItems) {
                         appItems.clear();
                         appItems.addAll(list);
@@ -180,28 +179,7 @@ public class MainActivity extends AppCompatActivity {
         }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     }
 
-    private Map<String, String> buildPackageLabelMap() {
-        Map<String, String> map = new HashMap<>();
-        try {
-            PackageManager pm = getPackageManager();
-            List<ApplicationInfo> apps = pm.getInstalledApplications(PackageManager.GET_META_DATA);
-            if (apps != null) {
-                for (ApplicationInfo ai : apps) {
-                    try {
-                        CharSequence lab = pm.getApplicationLabel(ai);
-                        if (lab != null && lab.length() > 0) {
-                            map.put(ai.packageName, lab.toString());
-                        }
-                    } catch (Throwable ignored) {
-                    }
-                }
-            }
-        } catch (Throwable t) {
-        }
-        return map;
-    }
-
-    private List<AppItem> buildAppItemsFromPackageLines(List<String> pmLines, Map<String, String> labelMap) {
+    private List<AppItem> buildAppItemsFromPackageLines(List<String> pmLines) {
         List<AppItem> list = new ArrayList<>();
         PackageManager pm = getPackageManager();
         for (String line : pmLines) {
@@ -210,59 +188,66 @@ public class MainActivity extends AppCompatActivity {
             if (l.isEmpty()) continue;
             String pkg = l;
             if (pkg.startsWith("package:")) pkg = pkg.substring(8);
+            int sp = pkg.indexOf('=');
+            if (sp > 0) pkg = pkg.substring(0, sp);
             pkg = pkg.trim();
             if (pkg.isEmpty()) continue;
-            String label = null;
-            if (labelMap != null) label = labelMap.get(pkg);
-            if (label == null) label = resolveAppLabel(pkg, pm);
-            boolean wh = whitelistSet.contains(pkg);
-            list.add(new AppItem(label != null && label.length() > 0 ? label : pkg, pkg, wh));
-        }
-        return list;
-    }
-
-    private String resolveAppLabel(String pkg, PackageManager pm) {
-        String label = null;
-        try {
-            ApplicationInfo ai = pm.getApplicationInfo(pkg, PackageManager.GET_META_DATA);
-            if (ai != null) {
-                CharSequence lab = pm.getApplicationLabel(ai);
-                if (lab != null && lab.length() > 0) return lab.toString();
-            }
-        } catch (Throwable ignored) {
-        }
-        try {
-            PackageInfo pi = pm.getPackageInfo(pkg, PackageManager.GET_META_DATA);
-            if (pi != null && pi.applicationInfo != null) {
-                CharSequence lab = pm.getApplicationLabel(pi.applicationInfo);
-                if (lab != null && lab.length() > 0) return lab.toString();
-            }
-        } catch (Throwable ignored) {
-        }
-        try {
-            ApplicationInfo ai2 = pm.getApplicationInfo(pkg, 0);
-            if (ai2 != null) {
-                CharSequence lab2 = pm.getApplicationLabel(ai2);
-                if (lab2 != null && lab2.length() > 0) return lab2.toString();
-            }
-        } catch (Throwable ignored) {
-        }
-        try {
-            PackageInfo pkgInfo = pm.getPackageInfo(pkg, 0);
-            if (pkgInfo != null && pkgInfo.applicationInfo != null && pkgInfo.applicationInfo.sourceDir != null) {
-                String src = pkgInfo.applicationInfo.sourceDir;
-                PackageInfo apkInfo = pm.getPackageArchiveInfo(src, PackageManager.GET_META_DATA);
-                if (apkInfo != null && apkInfo.applicationInfo != null) {
-                    ApplicationInfo a = apkInfo.applicationInfo;
-                    a.sourceDir = src;
-                    a.publicSourceDir = src;
-                    CharSequence lab = pm.getApplicationLabel(a);
-                    if (lab != null && lab.length() > 0) return lab.toString();
+            String label = pkg;
+            try {
+                int flags = PackageManager.GET_META_DATA;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    try {
+                        flags |= PackageManager.MATCH_DISABLED_COMPONENTS;
+                    } catch (NoSuchFieldError ignored) {}
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                    try {
+                        flags |= PackageManager.MATCH_UNINSTALLED_PACKAGES;
+                    } catch (NoSuchFieldError ignored) {}
+                }
+                ApplicationInfo ai = pm.getApplicationInfo(pkg, flags);
+                CharSequence lab = null;
+                try {
+                    lab = ai.loadLabel(pm);
+                } catch (Throwable t) {
+                }
+                if (lab != null && lab.length() > 0) {
+                    label = lab.toString();
+                } else {
+                    if (ai.nonLocalizedLabel != null && ai.nonLocalizedLabel.length() > 0) {
+                        label = ai.nonLocalizedLabel.toString();
+                    } else if (ai.labelRes != 0) {
+                        try {
+                            Resources r = pm.getResourcesForApplication(ai);
+                            String s = r.getString(ai.labelRes);
+                            if (s != null && s.length() > 0) label = s;
+                        } catch (Throwable t) {
+                        }
+                    } else {
+                        try {
+                            CharSequence gl = pm.getApplicationLabel(ai);
+                            if (gl != null && gl.length() > 0) label = gl.toString();
+                        } catch (Throwable t) {
+                        }
+                    }
+                }
+            } catch (Throwable e) {
+                try {
+                    PackageInfo pi = pm.getPackageInfo(pkg, 0);
+                    if (pi != null && pi.applicationInfo != null) {
+                        try {
+                            CharSequence lab2 = pi.applicationInfo.loadLabel(pm);
+                            if (lab2 != null && lab2.length() > 0) label = lab2.toString();
+                        } catch (Throwable t2) {
+                        }
+                    }
+                } catch (Throwable ignored) {
                 }
             }
-        } catch (Throwable ignored) {
+            boolean wh = whitelistSet.contains(pkg);
+            list.add(new AppItem(label, pkg, wh));
         }
-        return label;
+        return list;
     }
 
     private void loadAppList() {
@@ -294,8 +279,7 @@ public class MainActivity extends AppCompatActivity {
             if (forceReloadPackages || appItems.isEmpty()) {
                 List<String> pmLines = suShell.exec("pm list packages", 10000);
                 if (pmLines == null) pmLines = new ArrayList<String>();
-                Map<String, String> labelMap = buildPackageLabelMap();
-                List<AppItem> packages = buildAppItemsFromPackageLines(pmLines, labelMap);
+                List<AppItem> packages = buildAppItemsFromPackageLines(pmLines);
                 synchronized (appItems) {
                     appItems.clear();
                     appItems.addAll(packages);
