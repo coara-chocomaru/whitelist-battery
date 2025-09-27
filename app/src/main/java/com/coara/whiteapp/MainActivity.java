@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.content.pm.PackageManager.NameNotFoundException;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.os.Handler;
@@ -37,8 +38,8 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout mainLayout;
     private RecyclerView appRecyclerView;
     private AppAdapter appAdapter;
-    private List<AppItem> appItems;
-    private Set<String> whitelistSet;
+    private List<AppItem> appItems = new ArrayList<>();
+    private Set<String> whitelistSet = new HashSet<>();
     private Handler syncHandler;
     private Runnable syncRunnable;
     private static final long SYNC_INTERVAL = 5000;
@@ -75,18 +76,18 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean isRootAvailable() {
         Process process = null;
-        BufferedReader is = null;
+        BufferedReader reader = null;
         try {
-            process = Runtime.getRuntime().exec("su -c echo root_test");
-            is = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            String line = is.readLine();
+            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "echo root_test"});
+            reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String line = reader.readLine();
             process.waitFor();
-            return line != null && line.equals("root_test");
+            return line != null && line.trim().equals("root_test");
         } catch (IOException | InterruptedException e) {
             return false;
         } finally {
             try {
-                if (is != null) is.close();
+                if (reader != null) reader.close();
                 if (process != null) process.destroy();
             } catch (IOException e) {
             }
@@ -106,10 +107,20 @@ public class MainActivity extends AppCompatActivity {
         syncRunnable = new Runnable() {
             @Override
             public void run() {
-                refreshWhitelist();
-                if (appAdapter != null) {
-                    appAdapter.notifyDataSetChanged();
-                }
+                new AsyncTask<Void, Void, Void>() {
+                    @Override
+                    protected Void doInBackground(Void... voids) {
+                        whitelistSet = getWhitelist();
+                        return null;
+                    }
+
+                    @Override
+                    protected void onPostExecute(Void aVoid) {
+                        if (appAdapter != null) {
+                            appAdapter.notifyDataSetChanged();
+                        }
+                    }
+                }.execute();
                 syncHandler.postDelayed(this, SYNC_INTERVAL);
             }
         };
@@ -117,31 +128,52 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void loadAppList() {
-        new AsyncTask<Void, Void, Void>() {
+        new AsyncTask<Void, Void, List<AppItem>>() {
             @Override
-            protected Void doInBackground(Void... voids) {
-                refreshWhitelist();
-                appItems = getInstalledApps();
-                return null;
+            protected List<AppItem> doInBackground(Void... voids) {
+                whitelistSet = getWhitelist();
+                return getInstalledAppsViaSu();
             }
 
             @Override
-            protected void onPostExecute(Void aVoid) {
+            protected void onPostExecute(List<AppItem> items) {
+                appItems = items;
                 setupRecyclerView();
             }
         }.execute();
     }
 
-    private List<AppItem> getInstalledApps() {
+    private List<AppItem> getInstalledAppsViaSu() {
         List<AppItem> items = new ArrayList<>();
         PackageManager pm = getPackageManager();
-        List<ApplicationInfo> packages = pm.getInstalledApplications(PackageManager.GET_META_DATA);
-        for (ApplicationInfo packageInfo : packages) {
-            if ((packageInfo.flags & ApplicationInfo.FLAG_SYSTEM) == 0) {
-                String appName = packageInfo.loadLabel(pm).toString();
-                String packageName = packageInfo.packageName;
-                boolean isWhitelisted = whitelistSet.contains(packageName);
-                items.add(new AppItem(appName, packageName, isWhitelisted));
+        Process process = null;
+        BufferedReader reader = null;
+        try {
+            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "pm list packages -3"});
+            reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
+                if (line.startsWith("package:")) {
+                    String pkg = line.substring("package:".length()).trim();
+                    String appName = pkg;
+                    try {
+                        ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
+                        CharSequence label = pm.getApplicationLabel(ai);
+                        if (label != null) appName = label.toString();
+                    } catch (NameNotFoundException e) {
+                    }
+                    boolean isWhitelisted = whitelistSet.contains(pkg);
+                    items.add(new AppItem(appName, pkg, isWhitelisted));
+                }
+            }
+            process.waitFor();
+        } catch (IOException | InterruptedException e) {
+        } finally {
+            try {
+                if (reader != null) reader.close();
+                if (process != null) process.destroy();
+            } catch (IOException e) {
             }
         }
         return items;
@@ -161,23 +193,26 @@ public class MainActivity extends AppCompatActivity {
         appRecyclerView.setAdapter(appAdapter);
     }
 
-    private void refreshWhitelist() {
-        whitelistSet = getWhitelist();
-    }
-
     private Set<String> getWhitelist() {
         Set<String> set = new HashSet<>();
         Process process = null;
-        BufferedReader is = null;
+        BufferedReader reader = null;
         try {
-            process = Runtime.getRuntime().exec("su -c dumpsys deviceidle whitelist");
-            is = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "dumpsys deviceidle whitelist"});
+            reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
             String line;
-            while ((line = is.readLine()) != null) {
+            while ((line = reader.readLine()) != null) {
+                line = line.trim();
                 if (line.startsWith("+")) {
                     String pkg = line.substring(1).trim();
-                    if (!pkg.isEmpty()) {
-                        set.add(pkg);
+                    if (!pkg.isEmpty() && pkg.contains(".")) set.add(pkg);
+                } else {
+                    String[] tokens = line.split("[\t ,;]+");
+                    for (String t : tokens) {
+                        t = t.replaceAll("[+,]", "").trim();
+                        if (t.contains(".") && t.matches("[A-Za-z0-9_\\.\\-]+")) {
+                            set.add(t);
+                        }
                     }
                 }
             }
@@ -185,7 +220,7 @@ public class MainActivity extends AppCompatActivity {
         } catch (IOException | InterruptedException e) {
         } finally {
             try {
-                if (is != null) is.close();
+                if (reader != null) reader.close();
                 if (process != null) process.destroy();
             } catch (IOException e) {
             }
@@ -193,17 +228,30 @@ public class MainActivity extends AppCompatActivity {
         return set;
     }
 
-    public void updateWhitelist(String packageName, boolean add) {
-        String command = add ? "+" + packageName : "-" + packageName;
-        Process process = null;
-        try {
-            process = Runtime.getRuntime().exec("su -c dumpsys deviceidle whitelist " + command);
-            process.waitFor();
-        } catch (IOException | InterruptedException e) {
-            Toast.makeText(this, "Failed to update whitelist: " + e.getMessage(), Toast.LENGTH_SHORT).show();
-        } finally {
-            if (process != null) process.destroy();
-        }
+    public void updateWhitelist(final String packageName, final boolean add) {
+        new AsyncTask<Void, Void, Boolean>() {
+            @Override
+            protected Boolean doInBackground(Void... voids) {
+                Process process = null;
+                try {
+                    String cmd = "dumpsys deviceidle whitelist " + (add ? "+" : "-") + packageName;
+                    process = Runtime.getRuntime().exec(new String[]{"su", "-c", cmd});
+                    int exit = process.waitFor();
+                    return exit == 0;
+                } catch (IOException | InterruptedException e) {
+                    return false;
+                } finally {
+                    if (process != null) process.destroy();
+                }
+            }
+
+            @Override
+            protected void onPostExecute(Boolean success) {
+                whitelistSet = getWhitelist();
+                if (appAdapter != null) appAdapter.notifyDataSetChanged();
+                if (!success) Toast.makeText(MainActivity.this, "Failed to update whitelist", Toast.LENGTH_SHORT).show();
+            }
+        }.execute();
     }
 
     @Override
@@ -231,7 +279,7 @@ public class MainActivity extends AppCompatActivity {
         private MainActivity activity;
 
         AppAdapter(List<AppItem> items, MainActivity activity) {
-            this.items = items;
+            this.items = items != null ? items : new ArrayList<AppItem>();
             this.activity = activity;
         }
 
@@ -244,9 +292,10 @@ public class MainActivity extends AppCompatActivity {
 
         @Override
         public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
-            AppItem item = items.get(position);
+            final AppItem item = items.get(position);
             holder.appNameText.setText(item.appName);
             holder.packageNameText.setText(item.packageName);
+            holder.toggleSwitch.setOnCheckedChangeListener(null);
             holder.toggleSwitch.setChecked(item.isWhitelisted);
             holder.toggleSwitch.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
                 @Override
