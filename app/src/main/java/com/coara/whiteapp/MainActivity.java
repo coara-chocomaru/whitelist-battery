@@ -40,7 +40,8 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
 
-    private Button appListButton;
+    private Button systemAppListButton;
+    private Button userAppListButton;
     private LinearLayout mainLayout;
     private RecyclerView appRecyclerView;
     private AppAdapter appAdapter;
@@ -58,8 +59,10 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         mainLayout = findViewById(R.id.main_layout);
-        appListButton = findViewById(R.id.app_list_button);
-        appListButton.setVisibility(View.GONE);
+        systemAppListButton = findViewById(R.id.app_list_button);
+        userAppListButton = findViewById(R.id.app_ulist_button);
+        systemAppListButton.setVisibility(View.GONE);
+        userAppListButton.setVisibility(View.GONE);
         suShell = new SuShellManager();
         backgroundExecutor.execute(new Runnable() {
             @Override
@@ -97,11 +100,20 @@ public class MainActivity extends AppCompatActivity {
 
     private void initializeApp() {
         loadWhitelistFromFile();
-        appListButton.setVisibility(View.VISIBLE);
-        appListButton.setOnClickListener(new View.OnClickListener() {
+        systemAppListButton.setVisibility(View.VISIBLE);
+        userAppListButton.setVisibility(View.VISIBLE);
+        systemAppListButton.setText("システムアプリ一覧");
+        userAppListButton.setText("ユーザーアプリ一覧");
+        systemAppListButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                loadAppList();
+                loadPackagesWithCommand("pm list packages -s");
+            }
+        });
+        userAppListButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                loadPackagesWithCommand("pm list packages -3");
             }
         });
         syncHandler = new Handler(Looper.getMainLooper());
@@ -132,6 +144,67 @@ public class MainActivity extends AppCompatActivity {
         syncHandler.postDelayed(syncRunnable, SYNC_INTERVAL);
     }
 
+    private void loadPackagesWithCommand(final String pmCommand) {
+        new AsyncTask<Void, Void, List<AppItem>>() {
+            @Override
+            protected List<AppItem> doInBackground(Void... voids) {
+                try {
+                    List<String> pmLines = suShell.exec(pmCommand, 10000);
+                    if (pmLines == null) pmLines = new ArrayList<String>();
+                    Set<String> currentWhitelist = getWhitelistFromDumpsys();
+                    synchronized (whitelistSet) {
+                        whitelistSet.clear();
+                        whitelistSet.addAll(currentWhitelist);
+                    }
+                    List<AppItem> list = buildAppItemsFromPackageLines(pmLines);
+                    synchronized (appItems) {
+                        appItems.clear();
+                        appItems.addAll(list);
+                    }
+                    return new ArrayList<AppItem>(list);
+                } catch (Throwable t) {
+                    synchronized (appItems) {
+                        return new ArrayList<AppItem>(appItems);
+                    }
+                }
+            }
+
+            @Override
+            protected void onPostExecute(List<AppItem> items) {
+                if (!isFinishing() && !isDestroyed()) setupRecyclerView(items);
+            }
+        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+    }
+
+    private List<AppItem> buildAppItemsFromPackageLines(List<String> pmLines) {
+        List<AppItem> list = new ArrayList<>();
+        PackageManager pm = getPackageManager();
+        for (String line : pmLines) {
+            if (line == null) continue;
+            String l = line.trim();
+            if (l.isEmpty()) continue;
+            String pkg = l;
+            if (pkg.startsWith("package:")) pkg = pkg.substring(8);
+            if (pkg.isEmpty()) continue;
+            String label = pkg;
+            try {
+                ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
+                CharSequence lab = pm.getApplicationLabel(ai);
+                if (lab != null && lab.length() > 0) label = lab.toString();
+            } catch (Exception e) {
+                try {
+                    ApplicationInfo ai2 = pm.getApplicationInfo(pkg, PackageManager.GET_META_DATA);
+                    CharSequence lab2 = pm.getApplicationLabel(ai2);
+                    if (lab2 != null && lab2.length() > 0) label = lab2.toString();
+                } catch (Exception e2) {
+                }
+            }
+            boolean wh = whitelistSet.contains(pkg);
+            list.add(new AppItem(label, pkg, wh));
+        }
+        return list;
+    }
+
     private void loadAppList() {
         new AsyncTask<Void, Void, List<AppItem>>() {
             @Override
@@ -159,7 +232,9 @@ public class MainActivity extends AppCompatActivity {
                 whitelistSet.addAll(newWhitelist);
             }
             if (forceReloadPackages || appItems.isEmpty()) {
-                List<AppItem> packages = getAllPackages();
+                List<String> pmLines = suShell.exec("pm list packages", 10000);
+                if (pmLines == null) pmLines = new ArrayList<String>();
+                List<AppItem> packages = buildAppItemsFromPackageLines(pmLines);
                 synchronized (appItems) {
                     appItems.clear();
                     appItems.addAll(packages);
@@ -173,31 +248,6 @@ public class MainActivity extends AppCompatActivity {
             }
         } catch (Throwable t) {
         }
-    }
-
-    private List<AppItem> getAllPackages() {
-        List<AppItem> list = new ArrayList<>();
-        List<String> pmLines = suShell.exec("pm list packages", 10000);
-        if (pmLines == null) pmLines = new ArrayList<String>();
-        PackageManager pm = getPackageManager();
-        for (String line : pmLines) {
-            if (line == null) continue;
-            line = line.trim();
-            if (line.isEmpty()) continue;
-            String pkg = line;
-            if (pkg.startsWith("package:")) pkg = pkg.substring(8);
-            if (pkg.isEmpty()) continue;
-            String label = pkg;
-            try {
-                ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
-                CharSequence lab = ai.loadLabel(pm);
-                if (lab != null) label = lab.toString();
-            } catch (Exception e) {
-            }
-            boolean wh = whitelistSet.contains(pkg);
-            list.add(new AppItem(label, pkg, wh));
-        }
-        return list;
     }
 
     private Set<String> getWhitelistFromDumpsys() {
