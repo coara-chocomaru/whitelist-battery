@@ -10,7 +10,14 @@
         android:id="@+id/app_list_button"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="アプリ一覧"
+        android:text="システムアプリ一覧"
+        android:visibility="gone" />
+
+    <Button
+        android:id="@+id/app_ulist_button"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="ユーザーアプリ一覧"
         android:visibility="gone" />
 
 </LinearLayout>
