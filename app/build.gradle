@@ -3,12 +3,12 @@ plugins {
 }
 
 android {
-    compileSdk = 35 
+    compileSdk = 36
     namespace = 'com.coara.whiteapp'
 
     defaultConfig {
         minSdk = 24
-        targetSdk = 30
+        targetSdk = 33
         versionCode = 33
         versionName = "1.3"
         multiDexEnabled = true
