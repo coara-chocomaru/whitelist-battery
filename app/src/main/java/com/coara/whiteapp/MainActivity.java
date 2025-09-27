@@ -1,7 +1,6 @@
 package com.coara.whiteapp;
 
 import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.AsyncTask;
 import android.os.Bundle;
@@ -34,7 +33,9 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Random;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends AppCompatActivity {
@@ -43,16 +44,14 @@ public class MainActivity extends AppCompatActivity {
     private LinearLayout mainLayout;
     private RecyclerView appRecyclerView;
     private AppAdapter appAdapter;
-    private List<AppItem> appItems = new ArrayList<>();
+    private final List<AppItem> appItems = Collections.synchronizedList(new ArrayList<AppItem>());
     private final Set<String> whitelistSet = Collections.synchronizedSet(new HashSet<String>());
     private Handler syncHandler;
     private Runnable syncRunnable;
     private static final long SYNC_INTERVAL = 5000;
     private static final String WHITELIST_FILE = "whitelist_sync.txt";
-    private Process suProcess;
-    private DataOutputStream suOutput;
-    private BufferedReader suInput;
-    private BufferedReader suError;
+    private final ExecutorService backgroundExecutor = Executors.newSingleThreadExecutor();
+    private SuShellManager suShell;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -61,40 +60,39 @@ public class MainActivity extends AppCompatActivity {
         mainLayout = findViewById(R.id.main_layout);
         appListButton = findViewById(R.id.app_list_button);
         appListButton.setVisibility(View.GONE);
-        checkRootAccess();
+        suShell = new SuShellManager();
+        backgroundExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                suShell.start();
+                checkRootAccess();
+            }
+        });
     }
 
     private void checkRootAccess() {
-        new AsyncTask<Void, Void, Boolean>() {
-            @Override
-            protected Boolean doInBackground(Void... voids) {
-                try {
-                    suProcess = Runtime.getRuntime().exec("su");
-                    suOutput = new DataOutputStream(suProcess.getOutputStream());
-                    suInput = new BufferedReader(new InputStreamReader(suProcess.getInputStream()));
-                    suError = new BufferedReader(new InputStreamReader(suProcess.getErrorStream()));
-                    List<String> out = execSuCommandLines("echo root_test");
-                    if (out == null) return false;
-                    for (String s : out) {
-                        if ("root_test".equals(s.trim())) return true;
-                    }
-                    return false;
-                } catch (IOException e) {
-                    return false;
+        List<String> out = suShell.exec("echo root_test", 5000);
+        boolean ok = false;
+        if (out != null) {
+            for (String s : out) {
+                if ("root_test".equals(s != null ? s.trim() : null)) {
+                    ok = true;
+                    break;
                 }
             }
-
+        }
+        final boolean rooted = ok;
+        runOnUiThread(new Runnable() {
             @Override
-            protected void onPostExecute(Boolean isRooted) {
-                if (isRooted) {
+            public void run() {
+                if (rooted) {
                     initializeApp();
                 } else {
-                    closeSuProcess();
                     Toast.makeText(MainActivity.this, "Root access is required. Exiting.", Toast.LENGTH_LONG).show();
                     finish();
                 }
             }
-        }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
+        });
     }
 
     private void initializeApp() {
@@ -110,22 +108,25 @@ public class MainActivity extends AppCompatActivity {
         syncRunnable = new Runnable() {
             @Override
             public void run() {
-                Executors.newSingleThreadExecutor().execute(new Runnable() {
+                backgroundExecutor.execute(new Runnable() {
                     @Override
                     public void run() {
-                        syncWhitelistAndPackages(false);
-                        saveWhitelistToFile();
-                        runOnUiThread(new Runnable() {
-                            @Override
-                            public void run() {
-                                if (appAdapter != null) {
-                                    appAdapter.updateItems(appItems);
+                        try {
+                            syncWhitelistAndPackages(false);
+                            saveWhitelistToFile();
+                            runOnUiThread(new Runnable() {
+                                @Override
+                                public void run() {
+                                    if (!isFinishing() && !isDestroyed()) {
+                                        if (appAdapter != null) appAdapter.updateItems(new ArrayList<AppItem>(appItems));
+                                    }
                                 }
-                            }
-                        });
+                            });
+                        } catch (Throwable t) {
+                        }
                     }
                 });
-                syncHandler.postDelayed(this, SYNC_INTERVAL);
+                if (syncHandler != null) syncHandler.postDelayed(this, SYNC_INTERVAL);
             }
         };
         syncHandler.postDelayed(syncRunnable, SYNC_INTERVAL);
@@ -135,42 +136,49 @@ public class MainActivity extends AppCompatActivity {
         new AsyncTask<Void, Void, List<AppItem>>() {
             @Override
             protected List<AppItem> doInBackground(Void... voids) {
-                syncWhitelistAndPackages(true);
-                return new ArrayList<>(appItems);
+                try {
+                    syncWhitelistAndPackages(true);
+                    return new ArrayList<AppItem>(appItems);
+                } catch (Throwable t) {
+                    return new ArrayList<AppItem>(appItems);
+                }
             }
 
             @Override
             protected void onPostExecute(List<AppItem> items) {
-                setupRecyclerView(items);
+                if (!isFinishing() && !isDestroyed()) setupRecyclerView(items);
             }
         }.executeOnExecutor(AsyncTask.THREAD_POOL_EXECUTOR);
     }
 
     private void syncWhitelistAndPackages(boolean forceReloadPackages) {
-        Set<String> newWhitelist = getWhitelistFromDumpsys();
-        synchronized (whitelistSet) {
-            whitelistSet.clear();
-            whitelistSet.addAll(newWhitelist);
-        }
-        if (forceReloadPackages || appItems.isEmpty()) {
-            List<AppItem> packages = getAllPackages();
-            synchronized (appItems) {
-                appItems.clear();
-                appItems.addAll(packages);
+        try {
+            Set<String> newWhitelist = getWhitelistFromDumpsys();
+            synchronized (whitelistSet) {
+                whitelistSet.clear();
+                whitelistSet.addAll(newWhitelist);
             }
-        } else {
-            synchronized (appItems) {
-                for (AppItem ai : appItems) {
-                    ai.isWhitelisted = whitelistSet.contains(ai.packageName);
+            if (forceReloadPackages || appItems.isEmpty()) {
+                List<AppItem> packages = getAllPackages();
+                synchronized (appItems) {
+                    appItems.clear();
+                    appItems.addAll(packages);
+                }
+            } else {
+                synchronized (appItems) {
+                    for (AppItem ai : appItems) {
+                        ai.isWhitelisted = whitelistSet.contains(ai.packageName);
+                    }
                 }
             }
+        } catch (Throwable t) {
         }
     }
 
     private List<AppItem> getAllPackages() {
         List<AppItem> list = new ArrayList<>();
-        List<String> pmLines = execSuCommandLines("pm list packages");
-        if (pmLines == null) pmLines = new ArrayList<>();
+        List<String> pmLines = suShell.exec("pm list packages", 10000);
+        if (pmLines == null) pmLines = new ArrayList<String>();
         PackageManager pm = getPackageManager();
         for (String line : pmLines) {
             if (line == null) continue;
@@ -194,7 +202,7 @@ public class MainActivity extends AppCompatActivity {
 
     private Set<String> getWhitelistFromDumpsys() {
         Set<String> set = new HashSet<>();
-        List<String> lines = execSuCommandLines("dumpsys deviceidle whitelist");
+        List<String> lines = suShell.exec("dumpsys deviceidle whitelist", 10000);
         if (lines == null) return set;
         for (String line : lines) {
             if (line == null) continue;
@@ -225,44 +233,36 @@ public class MainActivity extends AppCompatActivity {
         return true;
     }
 
-    private List<String> execSuCommandLines(String command) {
-        List<String> out = new ArrayList<>();
-        String doneMarker = "DONE_" + System.currentTimeMillis();
-        try {
-            suOutput.writeBytes(command + "\n");
-            suOutput.writeBytes("echo " + doneMarker + "\n");
-            suOutput.flush();
-            String line;
-            while ((line = suInput.readLine()) != null) {
-                if (line.equals(doneMarker)) break;
-                out.add(line);
-            }
-            while ((line = suError.readLine()) != null) {
-            }
-            return out;
-        } catch (IOException e) {
-            return null;
-        }
-    }
-
     public void updateWhitelist(final String packageName, final boolean add) {
-        Executors.newSingleThreadExecutor().execute(new Runnable() {
+        backgroundExecutor.execute(new Runnable() {
             @Override
             public void run() {
-                String cmd = "dumpsys deviceidle whitelist " + (add ? "+" + packageName : "-" + packageName);
-                execSuCommandLines(cmd);
-                synchronized (whitelistSet) {
-                    if (add) whitelistSet.add(packageName); else whitelistSet.remove(packageName);
-                }
-                saveWhitelistToFile();
-                runOnUiThread(new Runnable() {
-                    @Override
-                    public void run() {
-                        if (appAdapter != null) appAdapter.notifyDataSetChanged();
-                        String message = add ? "バッテリー制限のwhitelistに追加しました" : "バッテリー制限のwhitelistから削除しました";
-                        Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show();
+                try {
+                    String cmd = "dumpsys deviceidle whitelist " + (add ? ("+" + packageName) : ("-" + packageName));
+                    suShell.exec(cmd, 8000);
+                    synchronized (whitelistSet) {
+                        if (add) whitelistSet.add(packageName); else whitelistSet.remove(packageName);
                     }
-                });
+                    saveWhitelistToFile();
+                    final String msg = add ? "バッテリー制限のwhitelistに追加しました on" : "バッテリー制限のwhitelistから削除しました。off";
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (!isFinishing() && !isDestroyed()) {
+                                Toast.makeText(MainActivity.this, msg, Toast.LENGTH_SHORT).show();
+                                if (appAdapter != null) appAdapter.notifyDataSetChanged();
+                            }
+                        }
+                    });
+                } catch (Throwable t) {
+                    final String err = "Failed to update whitelist";
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            if (!isFinishing() && !isDestroyed()) Toast.makeText(MainActivity.this, err, Toast.LENGTH_SHORT).show();
+                        }
+                    });
+                }
             }
         });
     }
@@ -326,27 +326,17 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void closeSuProcess() {
-        try {
-            if (suOutput != null) {
-                suOutput.writeBytes("exit\n");
-                suOutput.flush();
-                suOutput.close();
-            }
-            if (suInput != null) suInput.close();
-            if (suError != null) suError.close();
-            if (suProcess != null) suProcess.destroy();
-        } catch (IOException e) {
-        }
-    }
-
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (syncHandler != null && syncRunnable != null) {
-            syncHandler.removeCallbacks(syncRunnable);
+        try {
+            if (syncHandler != null && syncRunnable != null) {
+                syncHandler.removeCallbacks(syncRunnable);
+            }
+            backgroundExecutor.shutdownNow();
+            if (suShell != null) suShell.stop();
+        } catch (Throwable t) {
         }
-        closeSuProcess();
     }
 
     private static class AppItem {
@@ -364,11 +354,11 @@ public class MainActivity extends AppCompatActivity {
         private List<AppItem> items;
         private MainActivity activity;
         AppAdapter(List<AppItem> items, MainActivity activity) {
-            this.items = new ArrayList<>(items);
+            this.items = new ArrayList<AppItem>(items);
             this.activity = activity;
         }
         void updateItems(List<AppItem> newItems) {
-            this.items = new ArrayList<>(newItems);
+            this.items = new ArrayList<AppItem>(newItems);
             notifyDataSetChanged();
         }
         @NonNull
@@ -405,6 +395,113 @@ public class MainActivity extends AppCompatActivity {
                 appNameText = itemView.findViewById(R.id.app_name);
                 packageNameText = itemView.findViewById(R.id.package_name);
                 toggleSwitch = itemView.findViewById(R.id.toggle_switch);
+            }
+        }
+    }
+
+    private static class SuShellManager {
+        private Process proc;
+        private DataOutputStream os;
+        private BufferedReader in;
+        private BufferedReader err;
+        private final Object lock = new Object();
+        private volatile boolean started = false;
+        private final Random rnd = new Random();
+
+        boolean start() {
+            synchronized (lock) {
+                if (started) return true;
+                try {
+                    proc = Runtime.getRuntime().exec("su");
+                    os = new DataOutputStream(proc.getOutputStream());
+                    in = new BufferedReader(new InputStreamReader(proc.getInputStream()));
+                    err = new BufferedReader(new InputStreamReader(proc.getErrorStream()));
+                    started = true;
+                    return true;
+                } catch (Throwable t) {
+                    started = false;
+                    try {
+                        if (os != null) os.close();
+                        if (in != null) in.close();
+                        if (err != null) err.close();
+                        if (proc != null) proc.destroy();
+                    } catch (IOException e) {
+                    }
+                    os = null;
+                    in = null;
+                    err = null;
+                    proc = null;
+                    return false;
+                }
+            }
+        }
+
+        List<String> exec(String command, long timeoutMs) {
+            List<String> out = new ArrayList<String>();
+            synchronized (lock) {
+                if (!started) {
+                    if (!start()) return out;
+                }
+                String marker = "__END__" + Long.toHexString(System.nanoTime()) + Integer.toHexString(rnd.nextInt());
+                try {
+                    os.writeBytes(command + "\n");
+                    os.writeBytes("echo " + marker + "\n");
+                    os.flush();
+                    long deadline = System.currentTimeMillis() + timeoutMs;
+                    String line;
+                    while (System.currentTimeMillis() < deadline) {
+                        try {
+                            if (in != null && in.ready()) {
+                                line = in.readLine();
+                                if (line == null) break;
+                                if (line.equals(marker)) break;
+                                out.add(line);
+                                continue;
+                            }
+                            if (err != null && err.ready()) {
+                                err.readLine();
+                                continue;
+                            }
+                        } catch (IOException ioe) {
+                        }
+                        try {
+                            Thread.sleep(20);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                } catch (Throwable t) {
+                }
+                return out;
+            }
+        }
+
+        void stop() {
+            synchronized (lock) {
+                try {
+                    if (os != null) {
+                        try {
+                            os.writeBytes("exit\n");
+                            os.flush();
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                } catch (Throwable t) {
+                } finally {
+                    try {
+                        if (os != null) os.close();
+                        if (in != null) in.close();
+                        if (err != null) err.close();
+                        if (proc != null) proc.destroy();
+                    } catch (IOException e) {
+                    }
+                    os = null;
+                    in = null;
+                    err = null;
+                    proc = null;
+                    started = false;
+                }
             }
         }
     }
