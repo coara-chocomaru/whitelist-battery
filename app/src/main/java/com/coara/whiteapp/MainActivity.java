@@ -24,7 +24,6 @@ import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.io.BufferedReader;
-import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
@@ -76,16 +75,10 @@ public class MainActivity extends AppCompatActivity {
 
     private boolean isRootAvailable() {
         Process process = null;
-        DataOutputStream os = null;
         BufferedReader is = null;
         try {
-            process = Runtime.getRuntime().exec("su");
-            os = new DataOutputStream(process.getOutputStream());
+            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "echo root_test"});
             is = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            os.writeBytes("echo root_test\n");
-            os.flush();
-            os.writeBytes("exit\n");
-            os.flush();
             String line = is.readLine();
             process.waitFor();
             return line != null && line.equals("root_test");
@@ -93,7 +86,6 @@ public class MainActivity extends AppCompatActivity {
             return false;
         } finally {
             try {
-                if (os != null) os.close();
                 if (is != null) is.close();
                 if (process != null) process.destroy();
             } catch (IOException e) {
@@ -115,8 +107,13 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void run() {
                 refreshWhitelist();
-                if (appAdapter != null) {
-                    appAdapter.notifyDataSetChanged();
+                if (appItems != null) {
+                    for (AppItem item : appItems) {
+                        item.isWhitelisted = whitelistSet.contains(item.packageName);
+                    }
+                    if (appAdapter != null) {
+                        appAdapter.notifyDataSetChanged();
+                    }
                 }
                 syncHandler.postDelayed(this, SYNC_INTERVAL);
             }
@@ -176,16 +173,10 @@ public class MainActivity extends AppCompatActivity {
     private Set<String> getWhitelist() {
         Set<String> set = new HashSet<>();
         Process process = null;
-        DataOutputStream os = null;
         BufferedReader is = null;
         try {
-            process = Runtime.getRuntime().exec("su");
-            os = new DataOutputStream(process.getOutputStream());
+            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "dumpsys deviceidle whitelist"});
             is = new BufferedReader(new InputStreamReader(process.getInputStream()));
-            os.writeBytes("dumpsys deviceidle whitelist\n");
-            os.flush();
-            os.writeBytes("exit\n");
-            os.flush();
             String line;
             while ((line = is.readLine()) != null) {
                 if (line.startsWith("+")) {
@@ -199,7 +190,6 @@ public class MainActivity extends AppCompatActivity {
         } catch (IOException | InterruptedException e) {
         } finally {
             try {
-                if (os != null) os.close();
                 if (is != null) is.close();
                 if (process != null) process.destroy();
             } catch (IOException e) {
@@ -211,23 +201,13 @@ public class MainActivity extends AppCompatActivity {
     public void updateWhitelist(String packageName, boolean add) {
         String command = add ? "+" + packageName : "-" + packageName;
         Process process = null;
-        DataOutputStream os = null;
         try {
-            process = Runtime.getRuntime().exec("su");
-            os = new DataOutputStream(process.getOutputStream());
-            os.writeBytes("dumpsys deviceidle whitelist " + command + "\n");
-            os.flush();
-            os.writeBytes("exit\n");
-            os.flush();
+            process = Runtime.getRuntime().exec(new String[]{"su", "-c", "dumpsys deviceidle whitelist " + command});
             process.waitFor();
         } catch (IOException | InterruptedException e) {
             Toast.makeText(this, "Failed to update whitelist: " + e.getMessage(), Toast.LENGTH_SHORT).show();
         } finally {
-            try {
-                if (os != null) os.close();
-                if (process != null) process.destroy();
-            } catch (IOException e) {
-            }
+            if (process != null) process.destroy();
         }
     }
 
