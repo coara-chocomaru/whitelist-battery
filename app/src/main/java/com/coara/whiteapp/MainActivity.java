@@ -49,6 +49,10 @@ public class MainActivity extends AppCompatActivity {
     private Runnable syncRunnable;
     private static final long SYNC_INTERVAL = 5000;
     private static final String WHITELIST_FILE = "whitelist_sync.txt";
+    private Process suProcess;
+    private DataOutputStream suOutput;
+    private BufferedReader suInput;
+    private BufferedReader suError;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -64,12 +68,20 @@ public class MainActivity extends AppCompatActivity {
         new AsyncTask<Void, Void, Boolean>() {
             @Override
             protected Boolean doInBackground(Void... voids) {
-                List<String> out = execSuCommandLines("echo root_test");
-                if (out == null) return false;
-                for (String s : out) {
-                    if ("root_test".equals(s.trim())) return true;
+                try {
+                    suProcess = Runtime.getRuntime().exec("su");
+                    suOutput = new DataOutputStream(suProcess.getOutputStream());
+                    suInput = new BufferedReader(new InputStreamReader(suProcess.getInputStream()));
+                    suError = new BufferedReader(new InputStreamReader(suProcess.getErrorStream()));
+                    List<String> out = execSuCommandLines("echo root_test");
+                    if (out == null) return false;
+                    for (String s : out) {
+                        if ("root_test".equals(s.trim())) return true;
+                    }
+                    return false;
+                } catch (IOException e) {
+                    return false;
                 }
-                return false;
             }
 
             @Override
@@ -77,6 +89,7 @@ public class MainActivity extends AppCompatActivity {
                 if (isRooted) {
                     initializeApp();
                 } else {
+                    closeSuProcess();
                     Toast.makeText(MainActivity.this, "Root access is required. Exiting.", Toast.LENGTH_LONG).show();
                     finish();
                 }
@@ -214,34 +227,21 @@ public class MainActivity extends AppCompatActivity {
 
     private List<String> execSuCommandLines(String command) {
         List<String> out = new ArrayList<>();
-        Process proc = null;
-        BufferedReader br = null;
-        BufferedReader bre = null;
-        DataOutputStream os = null;
+        String doneMarker = "DONE_" + System.currentTimeMillis();
         try {
-            proc = Runtime.getRuntime().exec(new String[]{"su", "-c", command});
-            br = new BufferedReader(new InputStreamReader(proc.getInputStream()));
-            bre = new BufferedReader(new InputStreamReader(proc.getErrorStream()));
+            suOutput.writeBytes(command + "\n");
+            suOutput.writeBytes("echo " + doneMarker + "\n");
+            suOutput.flush();
             String line;
-            while ((line = br.readLine()) != null) {
+            while ((line = suInput.readLine()) != null) {
+                if (line.equals(doneMarker)) break;
                 out.add(line);
             }
-            StringBuilder errBuilder = new StringBuilder();
-            while ((line = bre.readLine()) != null) {
-                errBuilder.append(line).append("\n");
+            while ((line = suError.readLine()) != null) {
             }
-            proc.waitFor();
             return out;
-        } catch (Exception e) {
-            return out;
-        } finally {
-            try {
-                if (os != null) os.close();
-                if (br != null) br.close();
-                if (bre != null) bre.close();
-                if (proc != null) proc.destroy();
-            } catch (IOException e) {
-            }
+        } catch (IOException e) {
+            return null;
         }
     }
 
@@ -259,6 +259,8 @@ public class MainActivity extends AppCompatActivity {
                     @Override
                     public void run() {
                         if (appAdapter != null) appAdapter.notifyDataSetChanged();
+                        String message = add ? "バッテリー制限のwhitelistに追加しました" : "バッテリー制限のwhitelistから削除しました";
+                        Toast.makeText(MainActivity.this, message, Toast.LENGTH_SHORT).show();
                     }
                 });
             }
@@ -324,12 +326,27 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void closeSuProcess() {
+        try {
+            if (suOutput != null) {
+                suOutput.writeBytes("exit\n");
+                suOutput.flush();
+                suOutput.close();
+            }
+            if (suInput != null) suInput.close();
+            if (suError != null) suError.close();
+            if (suProcess != null) suProcess.destroy();
+        } catch (IOException e) {
+        }
+    }
+
     @Override
     protected void onDestroy() {
         super.onDestroy();
         if (syncHandler != null && syncRunnable != null) {
             syncHandler.removeCallbacks(syncRunnable);
         }
+        closeSuProcess();
     }
 
     private static class AppItem {
