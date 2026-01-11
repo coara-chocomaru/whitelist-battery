@@ -9,6 +9,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.graphics.Color;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -63,6 +64,7 @@ public class MainActivity extends AppCompatActivity {
     AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
     super.onCreate(savedInstanceState);
     setContentView(R.layout.activity_main);
+    getWindow().getDecorView().setBackgroundColor(Color.parseColor("#FFFFFF"));
     mainLayout = findViewById(R.id.main_layout);
     systemAppListButton = findViewById(R.id.app_list_button);
     userAppListButton = findViewById(R.id.app_ulist_button);
