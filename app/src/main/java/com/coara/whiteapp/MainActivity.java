@@ -21,6 +21,7 @@ import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.app.AppCompatDelegate;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
@@ -59,23 +60,23 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
-        mainLayout = findViewById(R.id.main_layout);
-        systemAppListButton = findViewById(R.id.app_list_button);
-        userAppListButton = findViewById(R.id.app_ulist_button);
-        systemAppListButton.setVisibility(View.GONE);
-        userAppListButton.setVisibility(View.GONE);
-        suShell = new SuShellManager();
-        backgroundExecutor.execute(new Runnable() {
-            @Override
-            public void run() {
-                suShell.start();
-                checkRootAccess();
-            }
-        });
+    AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO);
+    super.onCreate(savedInstanceState);
+    setContentView(R.layout.activity_main);
+    mainLayout = findViewById(R.id.main_layout);
+    systemAppListButton = findViewById(R.id.app_list_button);
+    userAppListButton = findViewById(R.id.app_ulist_button);
+    systemAppListButton.setVisibility(View.GONE);
+    userAppListButton.setVisibility(View.GONE);
+    suShell = new SuShellManager();
+    backgroundExecutor.execute(new Runnable() {
+        @Override
+        public void run() {
+            suShell.start();
+            checkRootAccess();
+           }
+       });
     }
-
     private void checkRootAccess() {
         List<String> out = suShell.exec("echo root_test", 5000);
         boolean ok = false;
